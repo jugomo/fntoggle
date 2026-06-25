@@ -48,3 +48,4 @@ fntoggle calls the private `IOHIDSetParameter` / `IOHIDGetParameter` IOKit funct
 ## License
 
 MIT
+-----------
