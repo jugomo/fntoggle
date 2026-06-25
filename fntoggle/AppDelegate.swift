@@ -1,5 +1,6 @@
 import AppKit
 import IOKit
+import Carbon.HIToolbox
 import os
 
 // IOHIDSetParameter / IOHIDGetParameter are in IOKit but not exposed in the Swift overlay.
@@ -9,10 +10,26 @@ func IOHIDSetParameter(_ handle: io_connect_t, _ key: CFString, _ bytes: UnsafeR
 @_silgen_name("IOHIDGetParameter")
 func IOHIDGetParameter(_ handle: io_connect_t, _ key: CFString, _ maxSize: IOByteCount, _ bytes: UnsafeMutableRawPointer, _ actualSize: UnsafeMutablePointer<IOByteCount>) -> kern_return_t
 
+// Free function required for Carbon's C function pointer.
+func hotkeyEventHandler(
+    _ callRef: EventHandlerCallRef?,
+    _ event: EventRef?,
+    _ userData: UnsafeMutableRawPointer?
+) -> OSStatus {
+    guard let ptr = userData else { return OSStatus(eventNotHandledErr) }
+    let delegate = Unmanaged<AppDelegate>.fromOpaque(ptr).takeUnretainedValue()
+    DispatchQueue.main.async { delegate.toggle() }
+    return noErr
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate {
     private let log = Logger(subsystem: "com.jugomo.fntoggle", category: "fn")
     private var statusItem: NSStatusItem!
     private var fnActive = false
+
+    private var hotKeyRef: EventHotKeyRef?
+    private var carbonEventHandlerRef: EventHandlerRef?
+    private var hotkeyWindowController: HotkeyWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -25,6 +42,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         fnActive = hidFKeyMode() == 1
         log.info("launched fnActive=\(self.fnActive) HIDFKeyMode=\(self.hidFKeyMode())")
         updateIcon()
+
+        installCarbonEventHandler()
+        if let config = HotkeyConfig.load() {
+            registerHotkey(keyCode: config.keyCode, modifiers: config.modifiers)
+        }
     }
 
     private func updateIcon() {
@@ -39,7 +61,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func toggle() {
+    func toggle() {
         let next = !fnActive
         fnActive = next
         updateIcon()
@@ -50,6 +72,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showContextMenu() {
         let menu = NSMenu()
+        menu.addItem(NSMenuItem(title: "Configurar atajo…", action: #selector(showHotkeyWindow), keyEquivalent: ""))
+        menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "About fntoggle", action: #selector(showAbout), keyEquivalent: ""))
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
@@ -63,7 +87,54 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.orderFrontStandardAboutPanel(nil)
     }
 
-    // Read current HIDFKeyMode (1 = standard fn keys, 0 = media keys).
+    @objc private func showHotkeyWindow() {
+        let config = HotkeyConfig.load()
+        let wc = HotkeyWindowController(
+            currentKeyCode: config?.keyCode ?? 0,
+            currentModifiers: config?.modifiers ?? []
+        )
+        wc.onSave = { [weak self] keyCode, modifiers in
+            HotkeyConfig(keyCode: keyCode, modifiers: modifiers).save()
+            self?.registerHotkey(keyCode: keyCode, modifiers: modifiers)
+        }
+        wc.onClear = { [weak self] in
+            HotkeyConfig.clear()
+            self?.unregisterHotkey()
+        }
+        hotkeyWindowController = wc
+        NSApp.activate(ignoringOtherApps: true)
+        wc.showWindow(nil)
+        wc.window?.center()
+        wc.window?.makeKeyAndOrderFront(nil)
+    }
+
+    // MARK: - Carbon hotkey
+
+    private func installCarbonEventHandler() {
+        var spec = EventTypeSpec(
+            eventClass: OSType(kEventClassKeyboard),
+            eventKind: UInt32(kEventHotKeyPressed)
+        )
+        let ptr = Unmanaged.passUnretained(self).toOpaque()
+        InstallEventHandler(GetApplicationEventTarget(), hotkeyEventHandler, 1, &spec, ptr, &carbonEventHandlerRef)
+    }
+
+    func registerHotkey(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) {
+        unregisterHotkey()
+        var hkID = EventHotKeyID()
+        hkID.signature = OSType(0x666E7467) // 'fntg'
+        hkID.id = 1
+        let kr = RegisterEventHotKey(UInt32(keyCode), modifiers.carbonFlags, hkID,
+                                     GetApplicationEventTarget(), 0, &hotKeyRef)
+        log.info("RegisterEventHotKey: \(kr == noErr ? "OK" : String(format: "0x%08x", UInt32(bitPattern: kr)))")
+    }
+
+    func unregisterHotkey() {
+        if let ref = hotKeyRef { UnregisterEventHotKey(ref); hotKeyRef = nil }
+    }
+
+    // MARK: - HID
+
     private func hidFKeyMode() -> Int32 {
         guard let conn = openHIDSystem() else { return -1 }
         defer { IOServiceClose(conn) }
@@ -73,7 +144,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return value
     }
 
-    // Apply HIDFKeyMode (1 = standard fn keys, 0 = media keys).
     private func setHIDFKeyMode(_ mode: Int32) {
         guard let conn = openHIDSystem() else {
             log.error("failed to open IOHIDSystem")
