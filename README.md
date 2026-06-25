@@ -16,9 +16,19 @@ macOS lets you choose whether the top row of keys acts as standard function keys
 | `♪`  | Media / special keys |
 
 - **Left-click** the menu bar icon to toggle the mode instantly.
-- **Right-click** for a context menu with About and Quit.
+- **Right-click** for a context menu with options to configure a global hotkey, view About, or Quit.
+- **Global hotkey** — assign any key combination so you can toggle from any app without touching the menu bar.
 
 The setting is applied immediately via IOKit and persisted to `~/Library/Preferences/com.apple.keyboard.plist` so it survives reboots.
+
+### Setting a global hotkey
+
+Right-click the menu bar icon and choose **Configure shortcut…**. A small recorder window opens:
+
+1. Click the recorder field and press your desired key combination (at least one of ⌘ ⌃ ⌥ ⇧ is required).
+2. Click **Save**. The hotkey is active immediately and remembered across launches.
+
+To remove the hotkey, open the window and click **Clear** (or press Delete inside the recorder field), then Save.
 
 ## Requirements
 
